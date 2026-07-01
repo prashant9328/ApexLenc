@@ -14,7 +14,10 @@ export class StorageService {
     notifyErrors: true,
     notifyNew: true,
     fontSize: 'sm',
-    wrapLines: false
+    wrapLines: false,
+    aiEnabled: true,
+    aiApiKey: '',
+    aiModel: 'llama-3.1-8b-instant'
   };
 
   static async getSettings() {

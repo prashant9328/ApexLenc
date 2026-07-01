@@ -256,11 +256,34 @@
           <button class="dtab" data-dtab="flow">Flow</button>
           <button class="dtab" data-dtab="callouts">Callouts</button>
           <button class="dtab" data-dtab="limits">Limits</button>
+          <button class="dtab" data-dtab="ai">AI Insights</button>
         </div>
 
         <!-- Tab: Limits / Governor Dashboard (special) -->
         <div id="limits-panel" class="limits-panel hidden">
           <div id="governor-grid" class="governor-grid"></div>
+        </div>
+
+        <div id="ai-insights-panel" class="ai-insights-panel">
+          <div class="ai-insights-header">
+            <div>
+              <div class="ai-insights-title">AI Insights</div>
+              <div class="ai-insights-subtitle">Explain logs, suggest fixes, and review SOQL risk</div>
+            </div>
+          </div>
+          <div class="ai-actions">
+            <button class="ai-action-btn" data-action="explain">Explain</button>
+            <button class="ai-action-btn" data-action="fix">Fix</button>
+            <button class="ai-action-btn" data-action="summary">Summary</button>
+            <button class="ai-action-btn" data-action="soql">SOQL</button>
+          </div>
+          <div class="ai-search-row">
+            <input id="ai-search-input" type="text" placeholder="Ask AI to find something…" spellcheck="false" />
+            <button id="btn-ai-search" class="mini-btn accent">Find</button>
+          </div>
+          <div id="ai-output" class="ai-output">
+            <div class="ai-empty">Select a log and use an AI action to see insights.</div>
+          </div>
         </div>
 
         <!-- Log Search -->
@@ -358,6 +381,19 @@
             <input type="checkbox" id="set-wrap-lines" />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
           </label>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">Groq API Key</label>
+          <input id="set-ai-key" class="text-input" type="password" placeholder="Enter your Groq API key" />
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">Groq Model</label>
+          <select id="set-ai-model" class="setting-select">
+            <option value="llama-3.1-8b-instant" selected>llama-3.1-8b-instant</option>
+            <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+          </select>
         </div>
 
         <button id="btn-save-settings" class="primary-btn full-width">Save Settings</button>

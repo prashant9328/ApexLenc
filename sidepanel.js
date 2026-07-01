@@ -5,6 +5,7 @@
 
 import { LogParser } from './services/parser.js';
 import { StorageService } from './services/storage.js';
+import { GroqAIService } from './services/ai.js';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
@@ -164,6 +165,9 @@ const els = {
   traceFlagList:   $('#trace-flag-list'),
   traceUserSearch: $('#trace-user-search'),
   traceUserResults:$('#trace-user-results'),
+  aiInsightsPanel: $('#ai-insights-panel'),
+  aiOutput:        $('#ai-output'),
+  aiSearchInput:   $('#ai-search-input'),
 };
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -269,6 +273,15 @@ function bindEvents() {
 
   // Trace user search
   els.traceUserSearch.addEventListener('input', debounce(searchTraceUsers, 350));
+
+  // AI insights
+  $$('.ai-action-btn').forEach(btn => {
+    btn.addEventListener('click', () => runAIAction(btn.dataset.action));
+  });
+  $('#btn-ai-search').addEventListener('click', runNaturalLanguageSearch);
+  els.aiSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') runNaturalLanguageSearch();
+  });
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
@@ -762,6 +775,7 @@ async function selectLog(log) {
     }
 
     renderDetailTab();
+    renderAIPlaceholder();
   } catch (err) {
     hideLogLoading();
     showLogError(err.message);
@@ -772,14 +786,20 @@ function renderDetailTab() {
   if (!state.parsedLog) return;
   const tab = state.activeDTab;
 
-  // Show/hide limits panel
   const isLimits = tab === 'limits';
+  const isAI = tab === 'ai';
   els.limitsPanel.classList.toggle('hidden', !isLimits);
-  els.logBodyWrap.classList.toggle('hidden', isLimits);
-  els.logSearchWrap.classList.toggle('hidden', isLimits);
+  els.aiInsightsPanel.classList.toggle('hidden', !isAI);
+  els.logBodyWrap.classList.toggle('hidden', isLimits || isAI);
+  els.logSearchWrap.classList.toggle('hidden', isLimits || isAI);
 
   if (isLimits) {
     renderGovernorDashboard();
+    return;
+  }
+
+  if (isAI) {
+    renderAIPlaceholder();
     return;
   }
 
@@ -854,6 +874,26 @@ function renderStructured(items, type) {
   });
 
   els.logBodyWrap.appendChild(panel);
+
+  panel.querySelectorAll('[data-error-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const wrapper = btn.closest('[data-error-ai]');
+      const message = wrapper?.dataset.errorAi || '';
+      const action = btn.dataset.errorAction;
+      const service = getAIService();
+      const contentEl = wrapper?.querySelector('.error-ai-content');
+      if (contentEl) contentEl.innerHTML = 'Thinking…';
+      try {
+        const prompt = action === 'fix'
+          ? `You are helping debug a Salesforce Apex error. Explain the issue in plain English and suggest a practical Apex-specific fix. Use Apex syntax only. If you include code, wrap it in fenced code blocks. Keep it short and actionable.\nError: ${message}`
+          : `You are helping debug a Salesforce Apex error. Explain the issue in plain English and mention the likely cause. Use Apex terminology and Apex syntax only. If you include code, wrap it in fenced code blocks.\nError: ${message}`;
+        const result = await service.generate(prompt, { maxTokens: 300 });
+        if (contentEl) contentEl.innerHTML = renderAIText(result || 'No explanation returned.');
+      } catch (err) {
+        if (contentEl) contentEl.innerHTML = renderAIText(err.message || 'Unable to generate explanation.');
+      }
+    });
+  });
 }
 
 function buildStructuredCard(item, type) {
@@ -864,7 +904,15 @@ function buildStructuredCard(item, type) {
           <span class="si-type error">${item.severity === 'fatal' ? 'FATAL ERROR' : 'EXCEPTION'}</span>
           <span class="si-badge">Line ${item.lineNum || '?'}</span>
         </div>
-        <div class="si-body">${escapeHtml(item.message || '')}</div>`;
+        <div class="si-body">${escapeHtml(item.message || '')}</div>
+        <div class="error-ai-inline" data-error-ai="${escapeHtml(item.message || '')}">
+          <div class="error-ai-title">AI error help</div>
+          <div class="error-ai-content">Need a quick explanation and fix suggestion?</div>
+          <div class="error-ai-actions">
+            <button data-error-action="explain">Explain</button>
+            <button data-error-action="fix">Fix</button>
+          </div>
+        </div>`;
 
     case 'debug':
       return `
@@ -1002,6 +1050,191 @@ function updateCountBar() {
   els.logCountLabel.textContent = `${logs.length} log${logs.length !== 1 ? 's' : ''}`;
   els.cntSuccess.textContent = `${ok} ok`;
   els.cntError.textContent   = `${err} err`;
+}
+
+// ─── AI Insights ────────────────────────────────────────────────────────────
+function getAIService() {
+  const apiKey = (state.settings.aiApiKey || '').trim();
+  if (!apiKey) throw new Error('Add your Groq API key in Settings first.');
+  return new GroqAIService(apiKey, state.settings.aiModel || 'llama-3.1-8b-instant');
+}
+
+function buildAIContext() {
+  const parsed = state.parsedLog || {};
+  const errors = (parsed.errors || []).slice(0, 6).map(e => e.message).filter(Boolean);
+  const soql = (parsed.soqlQueries || []).slice(0, 8).map(q => q.query || q.rest || '').filter(Boolean);
+  const dml = (parsed.dmlOperations || []).slice(0, 6).map(d => `${d.operation || 'DML'} ${d.objectName || ''}`.trim()).filter(Boolean);
+  const flow = (parsed.flowExecutions || []).slice(0, 6).map(f => `${f.type === 'start' ? 'Start' : 'End'} ${f.name || ''}`.trim()).filter(Boolean);
+  const limits = Object.entries(parsed.limits || {}).slice(0, 8).map(([key, value]) => `${key}: ${value.used || 0}/${value.max || '?'}`).filter(Boolean);
+  const recentLogs = state.logs.slice(0, 6).map(log => `${getLogTitle(log)} | ${log.Status || 'Unknown'} | ${log.Operation || ''}`).join('\n');
+
+  return {
+    logTitle: getLogTitle(state.selectedLog),
+    status: state.selectedLog?.Status || 'Unknown',
+    operation: state.selectedLog?.Operation || '',
+    request: state.selectedLog?.Request || '',
+    duration: state.selectedLog?.DurationMilliseconds || '',
+    size: state.selectedLog?.LogLength || '',
+    errorCount: errors.length,
+    errors,
+    soqlCount: soql.length,
+    soql,
+    dmlCount: dml.length,
+    dml,
+    flowCount: flow.length,
+    flow,
+    limits,
+    recentLogs
+  };
+}
+
+function renderAIPlaceholder() {
+  if (!state.selectedLog) {
+    els.aiOutput.innerHTML = '<div class="ai-empty">Select a log to enable AI insights.</div>';
+    return;
+  }
+
+  els.aiOutput.innerHTML = '<div class="ai-empty">Choose an AI action to inspect this log.</div>';
+}
+
+function renderAIText(content) {
+  const text = (content || '').replace(/\r\n/g, '\n');
+  const fenceRegex = /```([\w-]*)\n?([\s\S]*?)```/g;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index);
+    if (before) {
+      parts.push(renderTextSegment(before));
+    }
+
+    const lang = (match[1] || 'apex').toLowerCase();
+    const code = escapeHtml(match[2].trim());
+    parts.push(`<pre class="ai-code-block"><code class="language-${lang}">${code}</code></pre>`);
+    lastIndex = match.index + match[0].length;
+  }
+
+  const tail = text.slice(lastIndex);
+  if (tail) {
+    parts.push(renderTextSegment(tail));
+  }
+
+  return parts.join('');
+}
+
+function renderTextSegment(segment) {
+  const lines = segment.split('\n');
+  const blocks = [];
+  let currentCodeLines = [];
+
+  const codeLineRegex = /^\s*(?:public|private|protected|global|static|void|Boolean|String|Integer|Long|Decimal|List<|Map<|Set<|SObject|Database\.|System\.|new\s+|insert\s+|update\s+|delete\s+|upsert\s+|merge\s+|try\b|catch\b|if\b|for\b|while\b|switch\b|return\b).*|.*;.*$/;
+
+  const flushCode = () => {
+    if (currentCodeLines.length) {
+      blocks.push(`<pre class="ai-code-block"><code class="language-apex">${escapeHtml(currentCodeLines.join('\n')).trim()}</code></pre>`);
+      currentCodeLines = [];
+    }
+  };
+
+  lines.forEach((line, index) => {
+    if (codeLineRegex.test(line)) {
+      currentCodeLines.push(line);
+    } else {
+      if (currentCodeLines.length) {
+        flushCode();
+      }
+      blocks.push(escapeHtml(line));
+      if (index < lines.length - 1) {
+        blocks.push('<br>');
+      }
+    }
+  });
+
+  if (currentCodeLines.length) {
+    flushCode();
+  }
+
+  return blocks.join('');
+}
+
+function renderAIResult(title, content) {
+  els.aiOutput.innerHTML = `
+    <div class="ai-output-card">
+      <div class="ai-output-title">${escapeHtml(title)}</div>
+      <div class="ai-output-content">${renderAIText(content)}</div>
+    </div>`;
+}
+
+async function runAIAction(action) {
+  if (!state.selectedLog || !state.parsedLog) {
+    showToast('warning', 'No log selected', 'Select a log first');
+    return;
+  }
+
+  const service = getAIService();
+  const context = buildAIContext();
+  let prompt = '';
+
+  switch (action) {
+    case 'explain':
+      prompt = `You are ApexLens AI helping debug a Salesforce Apex log. Explain this log in plain English. Mention likely cause, significant behavior, and one practical next step. Use only Salesforce Apex language and syntax. If you include code, return it inside fenced code blocks.\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+      break;
+    case 'fix':
+      prompt = `You are ApexLens AI helping fix a Salesforce Apex issue. Based on the log errors and context, suggest likely causes and 2-3 concise Apex code or configuration fixes. Be precise and avoid generic warnings. Only mention SOQL, DML, or row-count limit risks when the log values are actually close to known Salesforce limits (100 SOQL, 150 DML, 50,000 rows retrieved). If the counts are low, explicitly say they are within safe limits and focus on the real cause of the issue. Use only Salesforce Apex language and syntax. Wrap any code examples in fenced code blocks.\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+      break;
+    case 'summary':
+      prompt = `Summarize this Salesforce Apex log in 4-6 bullet points. Focus on the likely problem, key operations, and biggest risk.\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+      break;
+    case 'soql':
+      prompt = `Review the SOQL queries in this log and identify likely performance or governance issues. Mention missing filters, large row counts, loops, or anything that could cause governor limit pressure. Use only Salesforce Apex and SOQL terminology. Wrap any query fixes in fenced code blocks.\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+      break;
+    default:
+      prompt = `Provide a short actionable insight for this Salesforce Apex log.\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+  }
+
+  els.aiOutput.innerHTML = '<div class="ai-empty">Thinking…</div>';
+  try {
+    const result = await service.generate(prompt, { maxTokens: 700 });
+    const title = {
+      explain: 'Explanation',
+      fix: 'Fix suggestions',
+      summary: 'Log summary',
+      soql: 'SOQL review'
+    }[action] || 'AI insight';
+    renderAIResult(title, result || 'No insight returned.');
+  } catch (err) {
+    renderAIResult('AI error', err.message || 'Unable to generate insight.');
+  }
+}
+
+async function runNaturalLanguageSearch() {
+  const question = els.aiSearchInput.value.trim();
+  if (!question) {
+    showToast('warning', 'Add a request', 'Type what you want the AI to find');
+    return;
+  }
+
+  if (!state.selectedLog) {
+    showToast('warning', 'No log selected', 'Choose a log first');
+    return;
+  }
+
+  try {
+    const service = getAIService();
+    els.aiOutput.innerHTML = '<div class="ai-empty">Turning your request into a search…</div>';
+    const prompt = `Convert the following natural-language request into a short search phrase for Salesforce Apex log debugging. Return only the phrase, 3-8 words max.\nRequest: ${question}`;
+    const phrase = (await service.generate(prompt, { maxTokens: 80 })).trim() || question;
+
+    state.searchQuery = phrase;
+    els.searchInput.value = phrase;
+    applyFilterAndSearch();
+    renderAIResult('Natural language search', `Search phrase: ${phrase}\n\nThe current log list has been filtered using this AI-generated search.`);
+    showToast('success', 'AI search applied', phrase);
+  } catch (err) {
+    renderAIResult('Natural language search', err.message || 'Unable to search with AI.');
+  }
 }
 
 // ─── Trace Flags ──────────────────────────────────────────────────────────────
@@ -1153,6 +1386,8 @@ function applySettings() {
   $('#set-notifications').checked = s.notifications !== false;
   $('#set-notify-errors').checked = s.notifyErrors !== false;
   $('#set-wrap-lines').checked = s.wrapLines === true;
+  $('#set-ai-key').value       = s.aiApiKey || '';
+  $('#set-ai-model').value     = s.aiModel || 'llama-3.1-8b-instant';
 
   // Apply to body
   document.body.classList.toggle('wrap-lines', s.wrapLines === true);
@@ -1169,6 +1404,9 @@ async function saveSettings() {
     notifications:   $('#set-notifications').checked,
     notifyErrors:    $('#set-notify-errors').checked,
     wrapLines:       $('#set-wrap-lines').checked,
+    aiEnabled:       true,
+    aiApiKey:        $('#set-ai-key').value.trim(),
+    aiModel:         $('#set-ai-model').value,
     theme:           state.settings.theme
   };
   state.settings = newSettings;
