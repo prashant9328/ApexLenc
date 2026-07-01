@@ -157,3 +157,4 @@ Issues and pull requests are welcome. If you find a bug or have a feature idea, 
 ## 📄 License
 
 MIT
+Thank you
